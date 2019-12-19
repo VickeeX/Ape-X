@@ -367,6 +367,11 @@ class BatchStorage:
     without re-calculating Q-values for each state.
     """
     def __init__(self, n_steps, gamma=0.99):
+        self.max_size = 200000
+        self.next_pos = 0
+        self.storage = []
+        self.idxes = []
+
         self.state_deque = deque(maxlen=n_steps)
         self.action_deque = deque(maxlen=n_steps)
         self.reward_deque = deque(maxlen=n_steps)
@@ -381,6 +386,15 @@ class BatchStorage:
 
         self.n_steps = n_steps
         self.gamma = gamma
+
+    def add_batch(self, batch, idxes):
+        """
+        store batch data into local buffer
+        """
+        for data, idx in zip(*batch, idxes):
+            self.storage[self.next_pos] = data
+            self.idxes[self.next_pos] = idx
+            self.next_pos = (self.next_pos + 1) % self.max_size
 
     def add(self, state, reward, action, done, q_values):
         if len(self.state_deque) == self.n_steps or done:
@@ -419,7 +433,6 @@ class BatchStorage:
         self.next_q_values = []
 
     def compute_priorities(self):
-        # TODO: Should I seperate this method from BatchStorage class?
         actions = np.array(self.actions, copy=False)
         rewards = np.array(self.rewards, copy=False)
         dones = np.array(self.dones, copy=False)
@@ -437,6 +450,19 @@ class BatchStorage:
         prios = self.compute_priorities()
         batch = [self.states, self.actions, self.rewards, self.next_states, self.dones]
         return batch, prios
+
+    def get_sample_batch(self, sample_idxes):
+        sample_store_poses = []
+        for i, idx in enumerate(self.idxes):
+            if idx in sample_idxes:
+                sample_store_poses.append(i)
+                if len(sample_store_idxes) == len(sample_idxes):
+                    break
+
+        data = [[data[i] for i in sample_store_poses] for data in
+                [self.states, self.actions, self.rewards, self.next_states, self.dones]]
+
+        return data
 
     def multi_step_reward(self, *rewards):
         ret = 0.

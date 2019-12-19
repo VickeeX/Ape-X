@@ -49,12 +49,23 @@ def recv_param(learner_ip, actor_id, param_queue):
         param_queue.put(param)
 
 
-def exploration(args, actor_id, n_actors, replay_ip, param_queue):
+def get_sample_batch(sample_enque, sample_deque):
+    ctx = zmq.Context()
+    socket = ctx.socket(zmq.REP)
+    socket.bind("tcp://*:51004")
+    while True:
+        idxes = socket.recv()
+        sample_enque.put(idxes)
+        batch = sample_deque.get()
+        data = pickle.dumps(batch)
+        socket.send(data, copy=False)
+
+
+def exploration(args, actor_id, n_actors, replay_ip, param_queue, sample_enque, sample_deque):
     ctx = zmq.Context()
     batch_socket = ctx.socket(zmq.DEALER)
     batch_socket.setsockopt(zmq.IDENTITY, pickle.dumps('actor-{}'.format(actor_id)))
     batch_socket.connect('tcp://{}:51001'.format(replay_ip))
-    outstanding = 0
 
     writer = SummaryWriter(comment="-{}-actor{}".format(args.env, actor_id))
 
@@ -102,27 +113,40 @@ def exploration(args, actor_id, n_actors, replay_ip, param_queue):
             except queue.Empty:
                 pass
 
+        # passive data pull now
         if len(storage) == args.send_interval:
             batch, prios = storage.make_batch()
             data = pickle.dumps((batch, prios))
-            batch, prios = None, None
-            storage.reset()
-            while outstanding >= args.max_outstanding:
-                batch_socket.recv()
-                outstanding -= 1
             batch_socket.send(data, copy=False)
-            outstanding += 1
-            print("Sending Batch..")
+            idxes = batch_socket.recv()
+            storage.add_batch(batch, idxes)
+        #     batch, prios = None, None
+        #     storage.reset()
+        #     while outstanding >= args.max_outstanding:
+        #         batch_socket.recv()
+        #         outstanding -= 1
+        #     batch_socket.send(data, copy=False)
+        #     outstanding += 1
+        #     print("Sending Batch..")
+
+        # get sample batch after each step
+        while sample_enque:
+            idxes = sample_enque.get()
+            sample_deque.put(storage.get_sample_batch(idxes))
 
 
 def main():
     actor_id, n_actors, replay_ip, learner_ip = get_environ()
     args = argparser()
     param_queue = Queue(maxsize=3)
+    sample_enque = Queue(maxsize=3)
+    sample_deque = Queue(maxsize=3)
 
     procs = [
-        Process(target=exploration, args=(args, actor_id, n_actors, replay_ip, param_queue)),
+        Process(target=exploration,
+                args=(args, actor_id, n_actors, replay_ip, param_queue, sample_enque, sample_deque)),
         Process(target=recv_param, args=(learner_ip, actor_id, param_queue)),
+        Process(target=get_sample_batch, args=(sample_enque, sample_deque))
     ]
 
     for p in procs:
