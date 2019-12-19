@@ -38,6 +38,10 @@ def argparser():
     parser.add_argument('--eps_alpha', type=float, default=7.0)
 
     # Arguments for Replay
+    parser.add_argument('--actor_num', type=int, default=8,
+                        help='Number of actors')
+    parser.add_argument('--actor_ips', type=list, default=[],
+                        help='IPs of actors for replay buffer to get batch data')
     parser.add_argument('--alpha', type=float, default=0.6,
                         help='Priority exponent')
     parser.add_argument('--beta', type=float, default=0.4,
