@@ -151,33 +151,22 @@ class ReplayBuffer(object):
             Max number of transitions to store in the buffer. When the buffer
             overflows the old memories are dropped.
         """
-        self._storage = []
+        # self._storage = []
         self._maxsize = size
         self._next_idx = 0
+        self._storage_meta = []
 
     def __len__(self):
         return len(self._storage)
 
-    def add(self, obs_t, action, reward, obs_tp1, done):
-        data = (obs_t, action, reward, obs_tp1, done)
-
-        if self._next_idx >= len(self._storage):
-            self._storage.append(data)
+    def add(self, identity):
+        idx = self._next_idx
+        if idx >= len(self._storage_meta):
+            self._storage_meta.append(identity)
         else:
-            self._storage[self._next_idx] = data
+            self._storage_meta[idx] = identity
         self._next_idx = (self._next_idx + 1) % self._maxsize
-
-    def _encode_sample(self, idxes):
-        obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
-        for i in idxes:
-            data = self._storage[i]
-            obs_t, action, reward, obs_tp1, done = data
-            obses_t.append(np.array(obs_t, copy=False))
-            actions.append(np.array(action, copy=False))
-            rewards.append(reward)
-            obses_tp1.append(np.array(obs_tp1, copy=False))
-            dones.append(done)
-        return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones)
+        return idx
 
     def sample(self, batch_size):
         """Sample a batch of experiences.
@@ -199,8 +188,8 @@ class ReplayBuffer(object):
             done_mask[i] = 1 if executing act_batch[i] resulted in
             the end of an episode and 0 otherwise.
         """
-        idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
-        return self._encode_sample(idxes)
+        idxes = [random.randint(0, len(self._storage_meta) - 1) for _ in range(batch_size)]
+        return idxes
 
 
 class PrioritizedReplayBuffer(ReplayBuffer):
@@ -236,6 +225,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         super().add(*args, **kwargs)
         self._it_sum[idx] = self._max_priority ** self._alpha
         self._it_min[idx] = self._max_priority ** self._alpha
+        return idx
 
     def _sample_proportional(self, batch_size):
         res = []
@@ -292,8 +282,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weight = (p_sample * len(self._storage)) ** (-beta)
             weights.append(weight / max_weight)
         weights = np.array(weights)
-        encoded_sample = self._encode_sample(idxes)
-        return tuple(list(encoded_sample) + [weights, idxes])
+        # return tuple(list(encoded_sample) + [weights, idxes])
+        return [self._storage_meta[i] for i in idxes] ,weights, idxes
 
     def update_priorities(self, idxes, priorities):
         """Update priorities of sampled transitions.
@@ -326,38 +316,22 @@ class CustomPrioritizedReplayBuffer(PrioritizedReplayBuffer):
     2. If we save obs as numpy.array, this will decompress LazyFrame which leads to memory explosion.
     To achieve memory efficiency, It is necessary to remove np.array(obs) from _encode_sample.
     """
+
     def __init__(self, size, alpha):
         super(CustomPrioritizedReplayBuffer, self).__init__(size, alpha)
 
-    def add(self, state, action, reward, next_state, done, priority):
+    def add(self, priority):
         idx = self._next_idx
-        data = (state, action, reward, next_state, done)
-
-        if self._next_idx >= len(self._storage):
-            self._storage.append(data)
+        if idx >= len(self._storage_meta):
+            self._storage_meta.append(identity)
         else:
-            self._storage[self._next_idx] = data
+            self._storage_meta[idx] = identity
         self._next_idx = (self._next_idx + 1) % self._maxsize
 
         self._it_sum[idx] = priority ** self._alpha
         self._it_min[idx] = priority ** self._alpha
         self._max_priority = max(self._max_priority, priority)
-
-    def _encode_sample(self, idxes):
-        obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
-        for i in idxes:
-            data = self._storage[i]
-            obs_t, action, reward, obs_tp1, done = data
-            obses_t.append(obs_t)
-            actions.append(np.array(action, copy=False))
-            rewards.append(np.array(reward, copy=False))
-            obses_tp1.append(obs_tp1)
-            dones.append(np.array(done, copy=False))
-        return (obses_t,
-                np.array(actions),
-                np.array(rewards),
-                obses_tp1,
-                np.array(dones))
+        return idx
 
 
 class BatchStorage:
@@ -366,6 +340,7 @@ class BatchStorage:
     Saving Q values with experiences enables td-error priority calculation
     without re-calculating Q-values for each state.
     """
+
     def __init__(self, n_steps, gamma=0.99):
         self.max_size = 200000
         self.next_pos = 0

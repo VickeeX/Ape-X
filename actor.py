@@ -49,13 +49,13 @@ def recv_param(learner_ip, actor_id, param_queue):
         param_queue.put(param)
 
 
-def get_sample_batch(sample_enque, sample_deque):
+def recv_sample_batch_idxes(sample_enque, sample_deque):
     ctx = zmq.Context()
     socket = ctx.socket(zmq.REP)
     socket.bind("tcp://*:51004")
     while True:
         idxes = socket.recv()
-        sample_enque.put(idxes)
+        sample_enque.put(pickle.loads(idxes))
         batch = sample_deque.get()
         data = pickle.dumps(batch)
         socket.send(data, copy=False)
@@ -113,26 +113,25 @@ def exploration(args, actor_id, n_actors, replay_ip, param_queue, sample_enque, 
             except queue.Empty:
                 pass
 
-        # passive data pull now
+        # get sample batch after each step
+        while sample_enque:
+            idxes = sample_enque.get()
+            sample_deque.put(storage.get_sample_batch(idxes))
+
+        # only pass the prios and get indexes from ReplayBuffer
         if len(storage) == args.send_interval:
             batch, prios = storage.make_batch()
-            data = pickle.dumps((batch, prios))
+            data = pickle.dumps(prios)
+            batch, prios = None, None
+            storage.reset()
             batch_socket.send(data, copy=False)
-            idxes = batch_socket.recv()
+            _, idxes = batch_socket.recv_multipart(copy=False)
             storage.add_batch(batch, idxes)
-        #     batch, prios = None, None
-        #     storage.reset()
         #     while outstanding >= args.max_outstanding:
         #         batch_socket.recv()
         #         outstanding -= 1
         #     batch_socket.send(data, copy=False)
         #     outstanding += 1
-        #     print("Sending Batch..")
-
-        # get sample batch after each step
-        while sample_enque:
-            idxes = sample_enque.get()
-            sample_deque.put(storage.get_sample_batch(idxes))
 
 
 def main():
@@ -146,7 +145,7 @@ def main():
         Process(target=exploration,
                 args=(args, actor_id, n_actors, replay_ip, param_queue, sample_enque, sample_deque)),
         Process(target=recv_param, args=(learner_ip, actor_id, param_queue)),
-        Process(target=get_sample_batch, args=(sample_enque, sample_deque))
+        Process(target=recv_sample_batch_idxes, args=(sample_enque, sample_deque))
     ]
 
     for p in procs:

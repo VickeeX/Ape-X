@@ -16,14 +16,16 @@ from memory import CustomPrioritizedReplayBuffer
 from arguments import argparser
 
 
-def push_batch(buffer, data):
+def push_batch(buffer, data, idendity):
     """
     support function to push batch samples to buffer
     """
-    batch, prios = pickle.loads(data)
-    for sample in zip(*batch, prios):
-        buffer.add(*sample)
-    batch, prios = None, None
+    idxes = []
+    prios = pickle.loads(data)
+    for prio in prios:
+        idx = buffer.add(*prio, idendity)
+        idxes.append(idx)
+    prios = None
 
 
 def update_prios(buffer, data):
@@ -35,12 +37,14 @@ def update_prios(buffer, data):
     idxes, prios = None, None
 
 
-def sample_batch(buffer, batch_size, beta):
+def sample_batch(buffer, batch_size, beta, sockets):
     """
     support function to update priorities to buffer
     """
-    batch = buffer.sample(batch_size, beta)
-    data = pickle.dumps(batch)
+    # return [self._storage_meta[i] for i in idxes] + [weights, idxes]
+    identities, weights, idxes = buffer.sample(batch_size, beta)
+    # TODO: get data according to identities and indexes from actors
+    data = pickle.dumps(tuple(list(batch) + [weights, idxes]))
     batch = None
     return data
 
@@ -90,8 +94,8 @@ async def recv_batch_worker(buffer, exe, event, lock, threshold_size):
     while True:
         identity, data = await socket.recv_multipart(copy=False)
         async with lock:
-            await loop.run_in_executor(exe, push_batch, buffer, data)
-        await socket.send_multipart((identity, b''))
+            indexes = await loop.run_in_executor(exe, push_batch, buffer, data, identity)
+        await socket.send_multipart((identity, pickle.dumps(indexes)))
         # TODO: 1. Only one worker should print log to console.
         #       2. Hard-coded part in (50 * cnt * 4) should be fixed.
         data = None
@@ -125,7 +129,7 @@ async def recv_prios_worker(buffer, exe, event, lock):
     return True
 
 
-async def send_batch_worker(buffer, exe, event, lock, batch_size, beta):
+async def send_batch_worker(buffer, exe, event, lock, batch_size, beta, actor_num, actor_ips):
     """
     coroutine to send training batches to learner
     """
@@ -135,12 +139,20 @@ async def send_batch_worker(buffer, exe, event, lock, batch_size, beta):
     ctx = Context.instance()
     socket = ctx.socket(zmq.DEALER)
     socket.connect("ipc:///tmp/5103.ipc")
+
+    actors_sockets = []
+    for i in range(actor_num):
+        ctx = zmq.Context()
+        socket = ctx.socket(zmq.DEALER)
+        socket.connect('tcp://{}:51004'.format(actor_ips[i]))
+        actors_sockets.append(socket)
+
     await event.wait()
     while True:
         identity, _ = await socket.recv_multipart(copy=False)
         # TODO: Is there any other greay way to support lock but make sampling faster?
         async with lock:
-            batch = await loop.run_in_executor(exe, sample_batch, buffer, batch_size, beta)
+            batch = await loop.run_in_executor(exe, sample_batch, buffer, batch_size, beta, actors_sockets)
         await socket.send_multipart([identity, batch], copy=False)
         batch = None
     return True
@@ -175,7 +187,7 @@ async def main():
         w = recv_prios_worker(buffer, exe, event, lock)
         workers.append(w)
     for _ in range(args.n_send_batch_worker):
-        w = send_batch_worker(buffer, exe, event, lock, args.batch_size, args.beta)
+        w = send_batch_worker(buffer, exe, event, lock, args.batch_size, args.beta, args.actor_num, args.actor_ips)
         workers.append(w)
 
     await asyncio.gather(*workers)
